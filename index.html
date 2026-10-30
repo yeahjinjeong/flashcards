@@ -55,18 +55,21 @@ h1{font-size:20px;margin:4px 0 14px}
 .hint{font-size:12px;color:var(--muted);text-align:center;margin-top:14px}
 .err{color:var(--no);font-size:14px;margin-top:10px;text-align:center}
 .gbtn{padding:14px 22px;border-radius:12px;border:1px solid var(--line);background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:16px}
+.note{font-size:13px;color:var(--accent);background:var(--yes-bg);border-radius:8px;padding:6px 10px;margin:0 0 12px}
+.top>div{display:flex;flex-wrap:wrap;justify-content:flex-end}
 .sync{font-size:12px;color:var(--muted);margin-top:-8px}
 </style>
 </head>
 <body>
 <div class="wrap" id="app"></div>
+<script src="config.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
 (function(){
-// ===== Supabase 설정: 아래 두 값을 본인 프로젝트 값으로 바꾸세요 =====
-var SUPABASE_URL='https://dnjgfnpbclhukaparsoa.supabase.co';
-var SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuamdmbnBiY2xodWthcGFyc29hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMxODI5MzAsImV4cCI6MjEwODc1ODkzMH0.5W-9AC6__IPitT-2TAkPU0WqW-6JpU5ft4salLxZOFQ';
+// Supabase 설정은 config.js 파일에 입력합니다
+var SUPABASE_URL=(window.APP_CONFIG||{}).url||'YOUR_SUPABASE_URL';
+var SUPABASE_KEY=(window.APP_CONFIG||{}).key||'YOUR_SUPABASE_ANON_KEY';
 // ====================================================================
 var KEY='flashcards-v1';
 var S={deck:[],st:{},filter:'all',shuffle:false,view:'card',queue:[],pos:0,shown:false,err:''};
@@ -127,17 +130,31 @@ function parse(file){
   r.onload=function(e){
     try{
       var wb=XLSX.read(e.target.result,{type:'array'});
-      var rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
-      var out=[],seen={};
-      rows.forEach(function(r,i){
-        var w=String(r[0]||'').trim(),m=String(r[1]||'').trim();
-        if(!w||!m)return;
-        if(i===0&&/^(단어|영단어|word|vocab|english|영어)/i.test(w))return;
-        if(seen[w])return;seen[w]=1;out.push({w:w,m:m});
+      var out=[],idx={},total=0,empty=0,dup=0,merged=0;
+      wb.SheetNames.forEach(function(sn){
+        var rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:''});
+        rows.forEach(function(r,i){
+          var w=String(r[0]||'').trim(),m=String(r[1]||'').trim();
+          if(!w&&!m)return;
+          if(i===0&&/^(단어|영단어|word|vocab|english|영어)/i.test(w))return;
+          total++;
+          if(!w||!m){empty++;return}
+          if(idx[w]!==undefined){var c=out[idx[w]];if(c.m.split(' / ').indexOf(m)>-1){dup++}else{c.m+=' / '+m;merged++}return}
+          idx[w]=out.length;out.push({w:w,m:m});
+        });
       });
-      if(!out.length){S.err='단어를 찾지 못했어요. 첫 번째 열에 단어, 두 번째 열에 뜻이 있는지 확인해 주세요.';render();return}
+      S.notice='엑셀 '+total+'행 중 '+out.length+'개 등록'+(merged?' · 같은 단어 '+merged+'행은 뜻을 합쳤어요':'')+(dup?' · 완전히 같은 중복 '+dup+'행 제외':'')+(empty?' · 단어나 뜻이 빈 '+empty+'행 제외':'');
+      var add=S.addMode;S.addMode=false;
+      if(!out.length){if(add){S.note='단어를 찾지 못했어요. 첫 열에 단어, 둘째 열에 뜻이 있는지 확인해 주세요.';render();return}S.err='단어를 찾지 못했어요. 첫 번째 열에 단어, 두 번째 열에 뜻이 있는지 확인해 주세요.';render();return}
+      if(add){
+        var have={};S.deck.forEach(function(c){have[c.w]=1});
+        var fresh=out.filter(function(c){return !have[c.w]});
+        S.deck=S.deck.concat(fresh);
+        S.note=fresh.length+'개 추가됨'+(out.length-fresh.length?' (이미 있는 '+(out.length-fresh.length)+'개는 제외)':'');
+        S.deckDirty=true;build();save();render();return;
+      }
       S.deck=out;S.st={};S.err='';S.filter='all';S.deckDirty=true;build();save();render();
-    }catch(x){S.err='파일을 읽지 못했어요. .xlsx, .xls, .csv 파일인지 확인해 주세요.';render()}
+    }catch(x){S.addMode=false;S.err='파일을 읽지 못했어요. .xlsx, .xls, .csv 파일인지 확인해 주세요.';render()}
   };
   r.readAsArrayBuffer(file);
 }
@@ -149,7 +166,7 @@ function build(){
   S.queue=q;S.pos=0;S.shown=false;
 }
 function count(k){return S.deck.filter(function(c){return S.st[c.w]===k}).length}
-function mark(v){var c=S.queue[S.pos];if(!c)return;S.st[c.w]=v;save();S.pos++;S.shown=false;render()}
+function mark(v){var c=S.queue[S.pos];if(!c)return;S.note='';S.st[c.w]=v;save();S.pos++;S.shown=false;render()}
 function go(d){var n=S.pos+d;if(n<0||n>S.queue.length)return;S.pos=n;S.shown=false;render()}
 
 function render(){
@@ -169,7 +186,8 @@ function render(){
     return;
   }
   var k=count('k'),u=count('u'),n=S.deck.length;
-  var h='<div class="top"><h1>단어 플래시카드</h1><div><button class="link" id="reup">다른 파일 올리기</button>'+(user?'<button class="link" id="logout">로그아웃</button>':'')+'</div></div><div class="sync">'+syncText()+'</div><div style="height:12px"></div>';
+  var h='<div class="top"><h1>단어 플래시카드</h1><div><button class="link" id="add">단어 추가</button><button class="link" id="reup">새로 교체</button>'+(user?'<button class="link" id="logout">로그아웃</button>':'')+'</div></div><div class="sync">'+syncText()+'</div><input type="file" id="addfile" accept=".xlsx,.xls,.csv" hidden>'+(S.note?'<div class="note">'+esc(S.note)+'</div>':'')+'<div style="height:12px"></div>';
+  if(S.notice)h+='<div class="sync" style="margin:-4px 0 12px">'+esc(S.notice)+'</div>';
   h+='<div class="stats"><div><b>'+n+'</b>전체</div><div><b style="color:var(--accent)">'+k+'</b>외웠다</div><div><b style="color:var(--no)">'+u+'</b>안 외웠다</div></div>';
   h+='<div class="seg" role="group" aria-label="보기 범위">'+[['all','전체'],['u','안 외운 것'],['k','외운 것']].map(function(a){return '<button data-f="'+a[0]+'" aria-pressed="'+(S.filter===a[0])+'">'+a[1]+'</button>'}).join('')+'</div>';
   h+='<div class="opts"><div class="seg" style="margin:0;width:150px" role="group" aria-label="화면"><button data-v="card" aria-pressed="'+(S.view==='card')+'">카드</button><button data-v="list" aria-pressed="'+(S.view==='list')+'">목록</button></div><button class="tog" id="shuf" aria-pressed="'+S.shuffle+'">셔플 '+(S.shuffle?'켜짐':'꺼짐')+'</button></div>';
@@ -190,8 +208,10 @@ function render(){
   }
   app.innerHTML=h;
   var $=function(id){return document.getElementById(id)};
-  $('reup').onclick=function(){if(confirm('다른 파일을 올리면 현재 단어장과 외움 표시가 초기화돼요. 계속할까요?')){S.deck=[];S.st={};save();render()}};
+  $('reup').onclick=function(){if(confirm('새로 교체하면 현재 단어장과 외움 표시가 모두 지워져요. (기존 단어를 유지하려면 [단어 추가]를 쓰세요.) 계속할까요?')){S.deck=[];S.st={};save();render()}};
   if($('logout'))$('logout').onclick=logout;
+  $('add').onclick=function(){$('addfile').click()};
+  $('addfile').onchange=function(){var f=this.files[0];this.value='';if(f){S.addMode=true;S.note='';parse(f)}};
   app.querySelectorAll('[data-f]').forEach(function(b){b.onclick=function(){S.filter=b.dataset.f;build();save();render()}});
   app.querySelectorAll('[data-v]').forEach(function(b){b.onclick=function(){S.view=b.dataset.v;render()}});
   $('shuf').onclick=function(){S.shuffle=!S.shuffle;build();save();render()};
